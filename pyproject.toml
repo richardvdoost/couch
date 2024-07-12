@@ -1,13 +1,19 @@
 [tool.poetry]
 name = "couch"
 version = "0.1.0"
-description = ""
+description = "Banking Automation"
 authors = ["Richard van der Oost <richard@vanderoost.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.12"
+httpx = "^0.27.0"
 
+[tool.poetry.group.test.dependencies]
+pytest = "^8.2.2"
+
+[tool.ruff.lint.isort]
+force-single-line = true
 
 [build-system]
 requires = ["poetry-core"]
