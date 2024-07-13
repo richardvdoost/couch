@@ -49,11 +49,19 @@ class Bank(ABC):
         return type(self).__name__
 
     def find_account(self, **kwargs) -> "BankAccount":
-        for account in self.accounts:
-            if all(getattr(account, key) == val for key, val in kwargs.items()):
-                return account
+        account_matches = [
+            account
+            for account in self.accounts
+            if all(getattr(account, key) == val for key, val in kwargs.items())
+        ]
 
-        raise Exception(f"Account not found - Properties: {kwargs}")
+        if len(account_matches) == 0:
+            raise Exception(f"Account not found - Properties: {kwargs}")
+
+        if len(account_matches) > 1:
+            raise Exception(f"Multiple accounts found - Properties: {kwargs}")
+
+        return account_matches[0]
 
     def find_recipient(self, **kwargs) -> "Recipient":
         for recipient in self.recipients:
@@ -66,12 +74,12 @@ class Bank(ABC):
 @dataclass
 class BankAccount:
     id: str
-    bank: Bank
+    bank: Bank | str
     account_number: str | None
-    balance: Decimal
     currency: Currency
     account_type: AccountType
     profile_type: ProfileType
+    balance: Decimal | None = None
     name: str | None = None
     context: dict = field(default_factory=dict)
 
