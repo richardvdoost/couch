@@ -267,6 +267,15 @@ class Wise(Bank):
         headers = self.headers | {"X-idempotence-uuid": idempotence_uuid}
         return ensure_json(httpx.post(url, json=payload, headers=headers))
 
+    def get_conversion_rate(self, source: Currency, target: Currency) -> Decimal:
+        url = f"{self.api_url}/v1/rates?source={source.upper()}&target={target.upper()}"
+        rates = ensure_json(httpx.get(url, headers=self.headers))
+
+        if not rates:
+            raise Exception(f"No rates found for {source.upper()}/{target.upper()}")
+
+        return Decimal(str(rates[0]["rate"]))
+
 
 def create_wise_bank_accounts(
     bank: Bank,
@@ -476,7 +485,9 @@ class Banker:
                 "No transfer strategy for the given bank account combination"
             )
 
-        strategy.handle(source, target, amount, note)
+        amount_quantized = amount.quantize(Decimal("0.01"))
+
+        strategy.handle(source, target, amount_quantized, note)
 
 
 def text_to_uuid(text: str) -> str:
