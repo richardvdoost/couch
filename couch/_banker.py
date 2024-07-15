@@ -223,6 +223,8 @@ class Wise(Bank):
         if target_currency is None:
             assert free_payment_options, "No free payment options available"
 
+        logger.debug(f"Quote: {quote['id']}")
+
         return quote["id"]
 
     def create_transfer(
@@ -268,17 +270,36 @@ class Wise(Bank):
     def move_balance(
         self,
         profile_id: str,
+        source_balance_id: str,
+        target_balance_id: str,
+        amount: Decimal,
+        currency: Currency,
+        note: str | None = None,
+    ):
+        idempotence_uuid = str(uuid.uuid4()) if note is None else text_to_uuid(note)
+
+        url = f"{self.api_url}/v2/profiles/{profile_id}/balance-movements"
+        payload = dict(
+            amount=dict(value=str(amount), currency=currency.upper()),
+            sourceBalanceId=source_balance_id,
+            targetBalanceId=target_balance_id,
+        )
+        headers = self.headers | {"X-idempotence-uuid": idempotence_uuid}
+
+        return ensure_json(httpx.post(url, json=payload, headers=headers))
+
+    def convert_balance(
+        self,
+        profile_id: str,
         quote_id: str,
         note: str | None = None,
     ):
-        if note is None:
-            idempotence_uuid = str(uuid.uuid4())
-        else:
-            idempotence_uuid = text_to_uuid(note)
+        idempotence_uuid = str(uuid.uuid4()) if note is None else text_to_uuid(note)
 
         url = f"{self.api_url}/v2/profiles/{profile_id}/balance-movements"
         payload = {"quoteId": quote_id}
         headers = self.headers | {"X-idempotence-uuid": idempotence_uuid}
+
         return ensure_json(httpx.post(url, json=payload, headers=headers))
 
     def get_conversion_rate(self, source: Currency, target: Currency) -> Decimal:
@@ -450,24 +471,41 @@ class WiseInternalTransfer(TransferStrategy):
                 f"Wise recipient ID not found in target bank account: {source.context}"
             )
 
-        quote_id = source.bank.create_quote(
-            profile_id=source_profile_id,
-            amount=amount,
-            source_currency=source.currency,
-            target_currency=target.currency,
+        need_quote = not same_profiles or not same_currencies
+        quote_id = (
+            source.bank.create_quote(
+                profile_id=source_profile_id,
+                amount=amount,
+                source_currency=source.currency,
+                target_currency=target.currency,
+            )
+            if need_quote
+            else None
         )
 
-        logger.debug(f"Quote: {quote_id}")
-
         if same_profiles:
-            logger.info("Moving balance within one profile")
+            if same_currencies:
+                logger.info("Moving balance within one profile")
+                response = source.bank.move_balance(
+                    profile_id=source_profile_id,
+                    source_balance_id=source.id,
+                    target_balance_id=target.id,
+                    amount=amount,
+                    currency=target.currency,
+                    note=note,
+                )
+                logger.debug(f"Move balance response: {response}")
 
-            response = source.bank.move_balance(
-                profile_id=source_profile_id,
-                quote_id=quote_id,
-                note=note,
-            )
-            logger.debug(f"Move balance response: {response}")
+            else:
+                assert quote_id is not None
+
+                logger.info("Converting balance within one profile")
+                response = source.bank.convert_balance(
+                    profile_id=source_profile_id,
+                    quote_id=quote_id,
+                    note=note,
+                )
+                logger.debug(f"Convert balance response: {response}")
 
         if same_currencies and not same_profiles:
             logger.info("Creating transfer between profiles")
