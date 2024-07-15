@@ -36,6 +36,7 @@ class Bank(ABC):
         self.api_key = api_key
         self.accounts = []
         self.recipients = []
+        self.rates = {}
 
         self.fetch_accounts()
         self.fetch_recipients()
@@ -70,6 +71,10 @@ class Bank(ABC):
 
         raise Exception(f"Recipient not found - Properties: {kwargs}")
 
+    def get_conversion_rate(self, source: Currency, target: Currency) -> Decimal:
+        assert type(source) is type(target) is Currency
+        raise NotImplementedError(f"Conversion rate not available for {type(self)}")
+
 
 @dataclass
 class BankAccount:
@@ -82,6 +87,15 @@ class BankAccount:
     balance: Decimal | None = None
     name: str | None = None
     context: dict = field(default_factory=dict)
+
+    def balance_in_currency(self, currency: Currency) -> Decimal:
+        if self.balance is None:
+            raise Exception("Balance not available")
+
+        if not isinstance(self.bank, Bank):
+            raise NotImplementedError(f"Conversion rate not available for {self.bank}")
+
+        return self.balance * self.bank.get_conversion_rate(self.currency, currency)
 
 
 @dataclass
@@ -268,13 +282,25 @@ class Wise(Bank):
         return ensure_json(httpx.post(url, json=payload, headers=headers))
 
     def get_conversion_rate(self, source: Currency, target: Currency) -> Decimal:
+        if source == target:
+            return Decimal("1")
+
+        if (source, target) in self.rates:
+            logger.debug(f"Using cached rate for {source.upper()}/{target.upper()}")
+            return self.rates[(source, target)]
+
+        logger.debug(f"Fetching rate for {source.upper()}/{target.upper()}")
         url = f"{self.api_url}/v1/rates?source={source.upper()}&target={target.upper()}"
         rates = ensure_json(httpx.get(url, headers=self.headers))
 
         if not rates:
             raise Exception(f"No rates found for {source.upper()}/{target.upper()}")
 
-        return Decimal(str(rates[0]["rate"]))
+        rate = Decimal(str(rates[0]["rate"]))
+
+        self.rates[(source, target)] = rate
+
+        return rate
 
 
 def create_wise_bank_accounts(
