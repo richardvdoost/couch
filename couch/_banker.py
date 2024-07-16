@@ -336,7 +336,10 @@ class Wise(Bank):
             f"{self.api_url}/v3/profiles/{profile_id}/transfers/{transfer_id}/payments"
         )
         payload = {"type": "BALANCE"}
-        return ensure_json(httpx.post(url, headers=self.headers, json=payload))
+        return ensure_json(
+            httpx.post(url, headers=self.headers, json=payload),
+            allowed_status_codes={200, 201, 409},
+        )
 
     def move_balance(
         self,
@@ -692,7 +695,9 @@ def text_to_uuid(text: str) -> str:
     return uuid_str[:14] + "4" + uuid_str[15:]
 
 
-def ensure_json(response: httpx.Response, allowed_status_codes: set[int] = {200, 201}):
+def ensure_json(
+    response: httpx.Response, allowed_status_codes: set[int] = {200, 201}
+) -> dict:
     if response.status_code not in allowed_status_codes:
         raise Exception(f"HTTPX Error: {response.status_code} {response.json()}")
 
