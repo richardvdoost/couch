@@ -186,7 +186,37 @@ class Wise(Bank):
 
         self.accounts = create_wise_bank_accounts(self, profiles, balances, accounts)
 
-    def create_quote(
+    def fetch_recipients(self):
+        url = f"{self.api_url}/v2/profiles"
+        profiles = ensure_json(httpx.get(url, headers=self.headers))
+
+        accounts = [
+            a
+            for p in profiles
+            for a in ensure_json(
+                httpx.get(
+                    f"{self.api_url}/v2/accounts?profileId={p['id']}",
+                    headers=self.headers,
+                )
+            )["content"]
+        ]
+
+        self.recipients = [
+            Recipient(
+                id=a.pop("id"),
+                name=a.pop("name", {}).get("fullName", ""),
+                bank_name=a.get("details", {}).get(
+                    a.get("commonFieldMap", {}).get("bankCodeField"), ""
+                ),
+                account_number=a.pop("details", {}).get(
+                    a.pop("commonFieldMap", {}).get("accountNumberField"), ""
+                ),
+                context=a,
+            )
+            for a in accounts
+        ]
+
+    def create_balance_quote(
         self,
         profile_id: str,
         amount: Decimal,
@@ -200,6 +230,47 @@ class Wise(Bank):
             "targetCurrency": (target_currency or source_currency).upper(),
             "payOut": "BALANCE",
             "preferredPayIn": "BALANCE",
+            "paymentMetadata": {"transferNature": "MOVING_MONEY_BETWEEN_OWN_ACCOUNTS"},
+        }
+        quote = ensure_json(httpx.post(url, headers=self.headers, json=payload))
+
+        payment_options = quote["paymentOptions"]
+        enabled_payment_options = [
+            po for po in payment_options if po["disabled"] == False
+        ]
+        free_payment_options = [
+            po for po in enabled_payment_options if po["fee"]["total"] < 0.005
+        ]
+        fee_rates = [po["feePercentage"] for po in enabled_payment_options]
+        lowest_fee_rate = min(fee_rates)
+
+        logger.debug(f"Quote has {len(payment_options)} total payment options")
+        logger.debug(f"{len(enabled_payment_options)} are enabled")
+        logger.debug(f"{len(free_payment_options)} are free")
+        if not free_payment_options:
+            logger.debug(f"Lowest fee rate: {lowest_fee_rate:.02%}")
+
+        if target_currency is None:
+            assert free_payment_options, "No free payment options available"
+
+        logger.debug(f"Quote: {quote['id']}")
+
+        return quote["id"]
+
+    def create_bank_quote(
+        self,
+        profile_id: str,
+        target_recipient_id: str,
+        amount: Decimal,
+        source_currency: Currency,
+        target_currency: Currency | None = None,
+    ) -> str:
+        url = f"{self.api_url}/v3/profiles/{profile_id}/quotes"
+        payload = {
+            "sourceAmount": str(amount),
+            "sourceCurrency": source_currency.upper(),
+            "targetCurrency": (target_currency or source_currency).upper(),
+            "targetAccount": target_recipient_id,
             "paymentMetadata": {"transferNature": "MOVING_MONEY_BETWEEN_OWN_ACCOUNTS"},
         }
         quote = ensure_json(httpx.post(url, headers=self.headers, json=payload))
@@ -422,6 +493,7 @@ class MercuryExternalTransfer(TransferStrategy):
                 json=payload,
                 auth=(source.bank.api_key, ""),
             )
+            allowed_status_codes={200, 201, 409},
         )
 
         logger.debug(response)
@@ -473,7 +545,7 @@ class WiseInternalTransfer(TransferStrategy):
 
         need_quote = not same_profiles or not same_currencies
         quote_id = (
-            source.bank.create_quote(
+            source.bank.create_balance_quote(
                 profile_id=source_profile_id,
                 amount=amount,
                 source_currency=source.currency,
@@ -508,6 +580,8 @@ class WiseInternalTransfer(TransferStrategy):
                 logger.debug(f"Convert balance response: {response}")
 
         if same_currencies and not same_profiles:
+            assert quote_id is not None
+
             logger.info("Creating transfer between profiles")
 
             transfer_id = source.bank.create_transfer(
@@ -524,6 +598,60 @@ class WiseInternalTransfer(TransferStrategy):
             logger.debug(f"Fund response: {response}")
 
 
+class WiseExternalTransfer(TransferStrategy):
+    def handle(
+        self,
+        source: "BankAccount",
+        target: "BankAccount",
+        amount: Decimal,
+        note: str | None = None,
+    ):
+        # Probably not possible due to some SCA restrictions
+
+        assert type(source.bank) is Wise
+        assert type(target.bank) is not Wise
+
+        logger.info("Executing Wise external transfer")
+
+        target_recipient = source.bank.find_recipient(
+            account_number=target.account_number
+        )
+
+        logger.debug(f"Recipient: {target_recipient}")
+
+        if note is None:
+            transaction_id = str(uuid.uuid4())
+        else:
+            transaction_id = text_to_uuid(note)
+        logger.debug(f"Transaction ID: {transaction_id}")
+
+        source_profile_id = source.context.get("profile", {}).get("id")
+        quote_id = source.bank.create_bank_quote(
+            profile_id=source_profile_id,
+            target_recipient_id=target_recipient.id,
+            amount=amount,
+            source_currency=source.currency,
+        )
+
+        logger.debug(f"Quote ID: {quote_id}")
+
+        source_recipient_id = source.context.get("account", {}).get("recipientId")
+        transfer_id = source.bank.create_transfer(
+            source_recipient_id=source_recipient_id,
+            target_recipient_id=target_recipient.id,
+            quote_id=quote_id,
+            note=note,
+        )
+
+        logger.debug(f"Transfer ID: {transfer_id}")
+
+        response = source.bank.fund_transfer(
+            profile_id=source_profile_id, transfer_id=transfer_id
+        )
+
+        logger.debug(f"Fund response: {response}")
+
+
 class Banker:
     def __init__(self):
         self.full_strategies = {
@@ -531,6 +659,7 @@ class Banker:
         }
         self.from_strategies = {
             Mercury: MercuryExternalTransfer(),
+            Wise: WiseExternalTransfer(),
         }
 
     def transfer(
@@ -563,8 +692,8 @@ def text_to_uuid(text: str) -> str:
     return uuid_str[:14] + "4" + uuid_str[15:]
 
 
-def ensure_json(response: httpx.Response):
-    if response.status_code not in {200, 201}:
+def ensure_json(response: httpx.Response, allowed_status_codes: set[int] = {200, 201}):
+    if response.status_code not in allowed_status_codes:
         raise Exception(f"HTTPX Error: {response.status_code} {response.json()}")
 
     return response.json()
