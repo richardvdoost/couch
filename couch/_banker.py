@@ -492,7 +492,7 @@ class MercuryExternalTransfer(TransferStrategy):
                 f"{source.bank.api_url}/account/{source.id}/transactions",
                 json=payload,
                 auth=(source.bank.api_key, ""),
-            )
+            ),
             allowed_status_codes={200, 201, 409},
         )
 
