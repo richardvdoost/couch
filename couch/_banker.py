@@ -176,8 +176,8 @@ class Wise(Bank):
                     f"{self.api_url}/v4/profiles/{p['id']}/balances"
                     + "?types=STANDARD,SAVINGS",
                     headers=self.headers,
-                ).json()
-            )
+                )
+            ).json()
             for p in profiles
         }
         assert type(balances) is dict
@@ -187,8 +187,8 @@ class Wise(Bank):
                 httpx.get(
                     f"{self.api_url}/v1/borderless-accounts?profileId={p['id']}",
                     headers=self.headers,
-                ).json()
-            )
+                )
+            ).json()
             for p in profiles
         }
         assert type(accounts) is dict
