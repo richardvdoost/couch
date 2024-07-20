@@ -6,6 +6,7 @@ from dataclasses import field
 from decimal import Decimal
 from enum import StrEnum
 from enum import auto
+from pprint import pformat
 
 import httpx
 
@@ -430,6 +431,8 @@ class Wise(Bank):
 
 
 def wise_response_to_transaction(response: dict) -> Transaction:
+    logger.debug(f"Response: {pformat(response)}")
+
     source = response["steps"]["sourceAmount"]
     target = response["steps"]["targetAmount"]
 
