@@ -356,7 +356,7 @@ class Wise(Bank):
 
         return transfer["id"]
 
-    def fund_transfer(self, profile_id: str, transfer_id: str) -> Transaction:
+    def fund_transfer(self, profile_id: str, transfer_id: str) -> Transaction | None:
         url = (
             f"{self.api_url}/v3/profiles/{profile_id}/transfers/{transfer_id}/payments"
         )
@@ -377,7 +377,7 @@ class Wise(Bank):
         amount: Decimal,
         currency: Currency,
         note: str | None = None,
-    ) -> Transaction:
+    ) -> Transaction | None:
         idempotence_uuid = str(uuid.uuid4()) if note is None else text_to_uuid(note)
 
         url = f"{self.api_url}/v2/profiles/{profile_id}/balance-movements"
@@ -430,7 +430,10 @@ class Wise(Bank):
         return rate
 
 
-def wise_response_to_transaction(response: dict) -> Transaction:
+def wise_response_to_transaction(response: dict) -> Transaction | None:
+    if response["status"] == "REJECTED":
+        return None
+
     logger.debug(f"Response: {pformat(response)}")
 
     source = response["steps"]["sourceAmount"]
@@ -523,7 +526,7 @@ class TransferStrategy(ABC):
         target: "BankAccount",
         amount: Decimal,
         note: str | None = None,
-    ) -> Transaction: ...
+    ) -> Transaction | None: ...
 
 
 class MercuryExternalTransfer(TransferStrategy):
@@ -584,7 +587,7 @@ class WiseInternalTransfer(TransferStrategy):
         target: "BankAccount",
         amount: Decimal,
         note: str | None = None,
-    ) -> Transaction:
+    ) -> Transaction | None:
         assert type(source.bank) is Wise
         assert type(target.bank) is Wise
 
@@ -680,8 +683,6 @@ class WiseInternalTransfer(TransferStrategy):
 
             return transaction
 
-        raise Exception("No transfer strategy found")
-
 
 class WiseExternalTransfer(TransferStrategy):
     def handle(
@@ -690,7 +691,7 @@ class WiseExternalTransfer(TransferStrategy):
         target: "BankAccount",
         amount: Decimal,
         note: str | None = None,
-    ) -> Transaction:
+    ) -> Transaction | None:
         # Probably not possible due to some SCA restrictions
 
         assert type(source.bank) is Wise
