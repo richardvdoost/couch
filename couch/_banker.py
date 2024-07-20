@@ -445,13 +445,13 @@ def wise_response_to_transaction(response: dict) -> Transaction | None:
     target = steps[0]["targetAmount"]
     fee = steps[0]["fee"]
 
-    source_amount = Decimal(source["value"])
+    source_amount = Decimal(str(source["value"]))
     source_currency = get_currency(source["currency"])
 
-    target_amount = Decimal(target["value"])
+    target_amount = Decimal(str(target["value"]))
     target_currency = target["currency"]
 
-    fee_amount = Decimal(fee["value"])
+    fee_amount = Decimal(str(fee["value"]))
     fee_currency = get_currency(fee["currency"])
 
     assert (
@@ -577,9 +577,9 @@ class MercuryExternalTransfer(TransferStrategy):
 
         return Transaction(
             id=response["id"],
-            source_amount=Decimal(response["amount"]),
+            source_amount=Decimal(str(response["amount"])),
             source_currency=source.currency,
-            target_amount=Decimal(response["amount"]),
+            target_amount=Decimal(str(response["amount"])),
             target_currency=target.currency,
             fee_amount=Decimal("0"),
             fee_currency=source.currency,
