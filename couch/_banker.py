@@ -431,13 +431,19 @@ class Wise(Bank):
 
 
 def wise_response_to_transaction(response: dict) -> Transaction | None:
+    logger.debug(f"Response: {pformat(response)}")
+
     if response.get("status") == "REJECTED":
         return None
 
-    logger.debug(f"Response: {pformat(response)}")
+    steps = response.get("steps", [])
 
-    source = response["steps"][0]["sourceAmount"]
-    target = response["steps"][0]["targetAmount"]
+    if not steps:
+        return None
+
+    source = steps[0]["sourceAmount"]
+    target = steps[0]["targetAmount"]
+    fee = steps[0]["fee"]
 
     source_amount = Decimal(source["value"])
     source_currency = get_currency(source["currency"])
@@ -445,8 +451,8 @@ def wise_response_to_transaction(response: dict) -> Transaction | None:
     target_amount = Decimal(target["value"])
     target_currency = target["currency"]
 
-    fee_amount = Decimal(response["fee"]["value"])
-    fee_currency = get_currency(response["fee"]["currency"])
+    fee_amount = Decimal(fee["value"])
+    fee_currency = get_currency(fee["currency"])
 
     assert (
         source_currency is not None
