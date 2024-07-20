@@ -431,7 +431,7 @@ class Wise(Bank):
 
 
 def wise_response_to_transaction(response: dict) -> Transaction | None:
-    if response["status"] == "REJECTED":
+    if response.get("status") == "REJECTED":
         return None
 
     logger.debug(f"Response: {pformat(response)}")
