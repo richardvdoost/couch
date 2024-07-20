@@ -19,6 +19,13 @@ class Currency(StrEnum):
     USD = auto()
 
 
+def get_currency(iso_code: str) -> Currency | None:
+    try:
+        return Currency(iso_code.lower())
+    except ValueError:
+        return None
+
+
 class ProfileType(StrEnum):
     PERSONAL = auto()
     BUSINESS = auto()
@@ -112,7 +119,7 @@ class Mercury(Bank):
 
     def fetch_accounts(self):
         url = f"{self.api_url}/accounts"
-        response = ensure_json(httpx.get(url, auth=(self.api_key, "")))
+        response = ensure_success(httpx.get(url, auth=(self.api_key, ""))).json()
 
         self.accounts = [
             BankAccount(
@@ -132,7 +139,7 @@ class Mercury(Bank):
 
     def fetch_recipients(self):
         url = f"{self.api_url}/recipients"
-        response = ensure_json(httpx.get(url, auth=(self.api_key, "")))
+        response = ensure_success(httpx.get(url, auth=(self.api_key, ""))).json()
 
         self.recipients = [
             Recipient(
@@ -161,44 +168,46 @@ class Wise(Bank):
 
     def fetch_accounts(self):
         url = f"{self.api_url}/v2/profiles"
-        profiles = ensure_json(httpx.get(url, headers=self.headers))
+        profiles = ensure_success(httpx.get(url, headers=self.headers)).json()
 
         balances = {
-            p["id"]: ensure_json(
+            p["id"]: ensure_success(
                 httpx.get(
                     f"{self.api_url}/v4/profiles/{p['id']}/balances"
                     + "?types=STANDARD,SAVINGS",
                     headers=self.headers,
-                )
+                ).json()
             )
             for p in profiles
         }
+        assert type(balances) is dict
 
         accounts = {
-            p["id"]: ensure_json(
+            p["id"]: ensure_success(
                 httpx.get(
                     f"{self.api_url}/v1/borderless-accounts?profileId={p['id']}",
                     headers=self.headers,
-                )
+                ).json()
             )
             for p in profiles
         }
+        assert type(accounts) is dict
 
         self.accounts = create_wise_bank_accounts(self, profiles, balances, accounts)
 
     def fetch_recipients(self):
         url = f"{self.api_url}/v2/profiles"
-        profiles = ensure_json(httpx.get(url, headers=self.headers))
+        profiles = ensure_success(httpx.get(url, headers=self.headers)).json()
 
         accounts = [
             a
             for p in profiles
-            for a in ensure_json(
+            for a in ensure_success(
                 httpx.get(
                     f"{self.api_url}/v2/accounts?profileId={p['id']}",
                     headers=self.headers,
                 )
-            )["content"]
+            ).json()["content"]
         ]
 
         self.recipients = [
@@ -232,7 +241,9 @@ class Wise(Bank):
             "preferredPayIn": "BALANCE",
             "paymentMetadata": {"transferNature": "MOVING_MONEY_BETWEEN_OWN_ACCOUNTS"},
         }
-        quote = ensure_json(httpx.post(url, headers=self.headers, json=payload))
+        quote = ensure_success(
+            httpx.post(url, headers=self.headers, json=payload)
+        ).json()
 
         payment_options = quote["paymentOptions"]
         enabled_payment_options = [
@@ -273,7 +284,9 @@ class Wise(Bank):
             "targetAccount": target_recipient_id,
             "paymentMetadata": {"transferNature": "MOVING_MONEY_BETWEEN_OWN_ACCOUNTS"},
         }
-        quote = ensure_json(httpx.post(url, headers=self.headers, json=payload))
+        quote = ensure_success(
+            httpx.post(url, headers=self.headers, json=payload)
+        ).json()
 
         payment_options = quote["paymentOptions"]
         enabled_payment_options = [
@@ -325,9 +338,9 @@ class Wise(Bank):
                 "sourceOfFunds": "verification.source.of.funds.other",
             },
         }
-        transfer = ensure_json(
+        transfer = ensure_success(
             httpx.post(url, headers=self.headers, json=transfer_payload)
-        )
+        ).json()
 
         return transfer["id"]
 
@@ -336,10 +349,10 @@ class Wise(Bank):
             f"{self.api_url}/v3/profiles/{profile_id}/transfers/{transfer_id}/payments"
         )
         payload = {"type": "BALANCE"}
-        return ensure_json(
+        return ensure_success(
             httpx.post(url, headers=self.headers, json=payload),
             allowed_status_codes={200, 201, 409},
-        )
+        ).json()
 
     def move_balance(
         self,
@@ -360,7 +373,7 @@ class Wise(Bank):
         )
         headers = self.headers | {"X-idempotence-uuid": idempotence_uuid}
 
-        return ensure_json(httpx.post(url, json=payload, headers=headers))
+        return ensure_success(httpx.post(url, json=payload, headers=headers)).json()
 
     def convert_balance(
         self,
@@ -374,7 +387,7 @@ class Wise(Bank):
         payload = {"quoteId": quote_id}
         headers = self.headers | {"X-idempotence-uuid": idempotence_uuid}
 
-        return ensure_json(httpx.post(url, json=payload, headers=headers))
+        return ensure_success(httpx.post(url, json=payload, headers=headers)).json()
 
     def get_conversion_rate(self, source: Currency, target: Currency) -> Decimal:
         if source == target:
@@ -386,7 +399,7 @@ class Wise(Bank):
 
         logger.debug(f"Fetching rate for {source.upper()}/{target.upper()}")
         url = f"{self.api_url}/v1/rates?source={source.upper()}&target={target.upper()}"
-        rates = ensure_json(httpx.get(url, headers=self.headers))
+        rates = ensure_success(httpx.get(url, headers=self.headers)).json()
 
         if not rates:
             raise Exception(f"No rates found for {source.upper()}/{target.upper()}")
@@ -399,10 +412,7 @@ class Wise(Bank):
 
 
 def create_wise_bank_accounts(
-    bank: Bank,
-    profiles: list[dict],
-    balances: dict[int, list],
-    accounts: dict[int, list],
+    bank: Bank, profiles: list, balances: dict, accounts: dict
 ) -> list[BankAccount]:
     map_balance_type_to_bank_account_type = {
         "STANDARD": AccountType.CHECKING,
@@ -419,6 +429,10 @@ def create_wise_bank_accounts(
             balances_by_id = {b.pop("id"): b for b in account_balances}
 
             for balance in balances[profile["id"]]:
+                currency = get_currency(balance.pop("currency"))
+                if currency is None:
+                    continue
+
                 balance_id = balance.pop("id")
                 balance |= balances_by_id.get(balance_id, {})
                 bank_details = balance.pop("bankDetails", {})
@@ -432,7 +446,7 @@ def create_wise_bank_accounts(
                         if "accountNumber" in bank_details
                         else None,
                         balance=Decimal(f"{balance.pop('amount')['value']:.02f}"),
-                        currency=Currency(balance.pop("currency").lower()),
+                        currency=currency,
                         account_type=map_balance_type_to_bank_account_type[
                             balance.pop("type")
                         ],
@@ -490,14 +504,14 @@ class MercuryExternalTransfer(TransferStrategy):
             "note": note,
         }
 
-        response = ensure_json(
+        response = ensure_success(
             httpx.post(
                 f"{source.bank.api_url}/account/{source.id}/transactions",
                 json=payload,
                 auth=(source.bank.api_key, ""),
             ),
             allowed_status_codes={200, 201, 409},
-        )
+        ).json()
 
         logger.debug(response)
 
@@ -695,10 +709,10 @@ def text_to_uuid(text: str) -> str:
     return uuid_str[:14] + "4" + uuid_str[15:]
 
 
-def ensure_json(
+def ensure_success(
     response: httpx.Response, allowed_status_codes: set[int] = {200, 201}
-) -> dict:
+) -> httpx.Response:
     if response.status_code not in allowed_status_codes:
         raise Exception(f"HTTPX Error: {response.status_code} {response.json()}")
 
-    return response.json()
+    return response

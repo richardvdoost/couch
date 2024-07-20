@@ -80,5 +80,5 @@ def test_create_wise_bank_accounts_minimal():
     assert bank_account.balance == Decimal("1.23")
     assert bank_account.currency == Currency.USD
     assert bank_account.account_type == AccountType.CHECKING
-    assert bank_account.profile_type == ProfileType.PRIVATE
+    assert bank_account.profile_type == ProfileType.PERSONAL
     assert bank_account.name == "Account 2"
