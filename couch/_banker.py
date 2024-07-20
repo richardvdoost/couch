@@ -762,7 +762,7 @@ class Banker:
         target: BankAccount,
         amount: Decimal,
         note: str | None = None,
-    ):
+    ) -> Transaction | None:
         strategy = self.full_strategies.get(
             (type(source.bank), type(target.bank)),  # type: ignore
         ) or self.from_strategies.get(type(source.bank))  # type: ignore
@@ -774,7 +774,7 @@ class Banker:
 
         amount_quantized = amount.quantize(Decimal("0.01"))
 
-        strategy.handle(source, target, amount_quantized, note)
+        return strategy.handle(source, target, amount_quantized, note)
 
 
 def text_to_uuid(text: str) -> str:
