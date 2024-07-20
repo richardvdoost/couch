@@ -114,6 +114,17 @@ class Recipient:
     context: dict
 
 
+@dataclass
+class Transaction:
+    id: str
+    source_amount: Decimal
+    source_currency: Currency
+    target_amount: Decimal
+    target_currency: Currency
+    fee_amount: Decimal
+    fee_currency: Currency
+
+
 class Mercury(Bank):
     api_url = "https://api.mercury.com/api/v1"
 
@@ -344,15 +355,18 @@ class Wise(Bank):
 
         return transfer["id"]
 
-    def fund_transfer(self, profile_id: str, transfer_id: str):
+    def fund_transfer(self, profile_id: str, transfer_id: str) -> Transaction:
         url = (
             f"{self.api_url}/v3/profiles/{profile_id}/transfers/{transfer_id}/payments"
         )
         payload = {"type": "BALANCE"}
-        return ensure_success(
+
+        response = ensure_success(
             httpx.post(url, headers=self.headers, json=payload),
             allowed_status_codes={200, 201, 409},
         ).json()
+
+        return wise_response_to_transaction(response)
 
     def move_balance(
         self,
@@ -362,7 +376,7 @@ class Wise(Bank):
         amount: Decimal,
         currency: Currency,
         note: str | None = None,
-    ):
+    ) -> Transaction:
         idempotence_uuid = str(uuid.uuid4()) if note is None else text_to_uuid(note)
 
         url = f"{self.api_url}/v2/profiles/{profile_id}/balance-movements"
@@ -373,7 +387,9 @@ class Wise(Bank):
         )
         headers = self.headers | {"X-idempotence-uuid": idempotence_uuid}
 
-        return ensure_success(httpx.post(url, json=payload, headers=headers)).json()
+        response = ensure_success(httpx.post(url, json=payload, headers=headers)).json()
+
+        return wise_response_to_transaction(response)
 
     def convert_balance(
         self,
@@ -387,7 +403,9 @@ class Wise(Bank):
         payload = {"quoteId": quote_id}
         headers = self.headers | {"X-idempotence-uuid": idempotence_uuid}
 
-        return ensure_success(httpx.post(url, json=payload, headers=headers)).json()
+        response = ensure_success(httpx.post(url, json=payload, headers=headers)).json()
+
+        return wise_response_to_transaction(response)
 
     def get_conversion_rate(self, source: Currency, target: Currency) -> Decimal:
         if source == target:
@@ -409,6 +427,36 @@ class Wise(Bank):
         self.rates[(source, target)] = rate
 
         return rate
+
+
+def wise_response_to_transaction(response: dict) -> Transaction:
+    source = response["steps"]["sourceAmount"]
+    target = response["steps"]["targetAmount"]
+
+    source_amount = Decimal(source["value"])
+    source_currency = get_currency(source["currency"])
+
+    target_amount = Decimal(target["value"])
+    target_currency = target["currency"]
+
+    fee_amount = Decimal(response["fee"]["value"])
+    fee_currency = get_currency(response["fee"]["currency"])
+
+    assert (
+        source_currency is not None
+        and target_currency is not None
+        and fee_currency is not None
+    )
+
+    return Transaction(
+        id=response["id"],
+        source_amount=source_amount,
+        source_currency=source_currency,
+        target_amount=target_amount,
+        target_currency=target_currency,
+        fee_amount=fee_amount,
+        fee_currency=fee_currency,
+    )
 
 
 def create_wise_bank_accounts(
@@ -472,7 +520,7 @@ class TransferStrategy(ABC):
         target: "BankAccount",
         amount: Decimal,
         note: str | None = None,
-    ): ...
+    ) -> Transaction: ...
 
 
 class MercuryExternalTransfer(TransferStrategy):
@@ -482,7 +530,7 @@ class MercuryExternalTransfer(TransferStrategy):
         target: "BankAccount",
         amount: Decimal,
         note: str | None = None,
-    ):
+    ) -> Transaction:
         assert type(source.bank) is Mercury
         assert type(target.bank) is not Mercury
 
@@ -515,6 +563,16 @@ class MercuryExternalTransfer(TransferStrategy):
 
         logger.debug(response)
 
+        return Transaction(
+            id=response["id"],
+            source_amount=Decimal(response["amount"]),
+            source_currency=source.currency,
+            target_amount=Decimal(response["amount"]),
+            target_currency=target.currency,
+            fee_amount=Decimal("0"),
+            fee_currency=source.currency,
+        )
+
 
 class WiseInternalTransfer(TransferStrategy):
     def handle(
@@ -523,7 +581,7 @@ class WiseInternalTransfer(TransferStrategy):
         target: "BankAccount",
         amount: Decimal,
         note: str | None = None,
-    ):
+    ) -> Transaction:
         assert type(source.bank) is Wise
         assert type(target.bank) is Wise
 
@@ -575,7 +633,7 @@ class WiseInternalTransfer(TransferStrategy):
         if same_profiles:
             if same_currencies:
                 logger.info("Moving balance within one profile")
-                response = source.bank.move_balance(
+                transaction = source.bank.move_balance(
                     profile_id=source_profile_id,
                     source_balance_id=source.id,
                     target_balance_id=target.id,
@@ -583,18 +641,21 @@ class WiseInternalTransfer(TransferStrategy):
                     currency=target.currency,
                     note=note,
                 )
-                logger.debug(f"Move balance response: {response}")
+                logger.debug(f"Move balance transaction: {transaction}")
 
-            else:
-                assert quote_id is not None
+                return transaction
 
-                logger.info("Converting balance within one profile")
-                response = source.bank.convert_balance(
-                    profile_id=source_profile_id,
-                    quote_id=quote_id,
-                    note=note,
-                )
-                logger.debug(f"Convert balance response: {response}")
+            assert quote_id is not None
+
+            logger.info("Converting balance within one profile")
+            transaction = source.bank.convert_balance(
+                profile_id=source_profile_id,
+                quote_id=quote_id,
+                note=note,
+            )
+            logger.debug(f"Convert balance transaction: {transaction}")
+
+            return transaction
 
         if same_currencies and not same_profiles:
             assert quote_id is not None
@@ -608,11 +669,15 @@ class WiseInternalTransfer(TransferStrategy):
                 note=note,
             )
 
-            response = source.bank.fund_transfer(
+            transaction = source.bank.fund_transfer(
                 profile_id=source_profile_id, transfer_id=transfer_id
             )
 
-            logger.debug(f"Fund response: {response}")
+            logger.debug(f"Fund transaction: {transaction}")
+
+            return transaction
+
+        raise Exception("No transfer strategy found")
 
 
 class WiseExternalTransfer(TransferStrategy):
@@ -622,7 +687,7 @@ class WiseExternalTransfer(TransferStrategy):
         target: "BankAccount",
         amount: Decimal,
         note: str | None = None,
-    ):
+    ) -> Transaction:
         # Probably not possible due to some SCA restrictions
 
         assert type(source.bank) is Wise
@@ -662,11 +727,13 @@ class WiseExternalTransfer(TransferStrategy):
 
         logger.debug(f"Transfer ID: {transfer_id}")
 
-        response = source.bank.fund_transfer(
+        transaction = source.bank.fund_transfer(
             profile_id=source_profile_id, transfer_id=transfer_id
         )
 
-        logger.debug(f"Fund response: {response}")
+        logger.debug(f"Fund transaction: {transaction}")
+
+        return transaction
 
 
 class Banker:
