@@ -436,8 +436,8 @@ def wise_response_to_transaction(response: dict) -> Transaction | None:
 
     logger.debug(f"Response: {pformat(response)}")
 
-    source = response["steps"]["sourceAmount"]
-    target = response["steps"]["targetAmount"]
+    source = response["steps"][0]["sourceAmount"]
+    target = response["steps"][0]["targetAmount"]
 
     source_amount = Decimal(source["value"])
     source_currency = get_currency(source["currency"])
