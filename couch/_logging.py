@@ -1,11 +1,11 @@
 import logging
 
 
-def get_logger(name: str, level: int = logging.DEBUG) -> logging.Logger:
+def get_logger(name: str, level: int = logging.WARNING) -> logging.Logger:
     logger = logging.getLogger(name)
     logger.setLevel(level)
 
-    if not logger.handlers:
+    if name == "__main__" and not logger.handlers:
         ch = logging.StreamHandler()
         ch.setFormatter(ColorFormatter())
         logger.addHandler(ch)
