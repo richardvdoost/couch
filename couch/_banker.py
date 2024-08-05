@@ -92,7 +92,7 @@ class BankAccount:
     currency: Currency
     account_type: AccountType
     profile_type: ProfileType
-    balance: Decimal | None = None
+    balance: Decimal = Decimal("0")
     name: str | None = None
     context: dict = field(default_factory=dict)
 
